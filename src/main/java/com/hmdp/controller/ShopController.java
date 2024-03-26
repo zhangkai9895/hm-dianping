@@ -7,6 +7,7 @@ import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
 import com.hmdp.service.IShopService;
 import com.hmdp.utils.SystemConstants;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
@@ -21,6 +22,7 @@ import javax.annotation.Resource;
  */
 @RestController
 @RequestMapping("/shop")
+@Slf4j
 public class ShopController {
 
     @Resource
@@ -33,7 +35,8 @@ public class ShopController {
      */
     @GetMapping("/{id}")
     public Result queryShopById(@PathVariable("id") Long id) {
-        return Result.ok(shopService.getById(id));
+        log.info("c端根据id查询店铺，id为：{}",id);
+        return Result.ok(shopService.queryById(id));
     }
 
     /**
@@ -50,14 +53,15 @@ public class ShopController {
     }
 
     /**
-     * 更新商铺信息
+     * 更新商铺信息，s端操作
      * @param shop 商铺数据
      * @return 无
      */
     @PutMapping
     public Result updateShop(@RequestBody Shop shop) {
         // 写入数据库
-        shopService.updateById(shop);
+        log.info("s端口请求更新店铺信息，店铺id为：{}",shop.getId());
+        shopService.updateShop(shop);
         return Result.ok();
     }
 
