@@ -7,25 +7,26 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.conditions.update.UpdateChainWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ScrollResult;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
+import com.hmdp.entity.Follow;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
 import com.hmdp.service.IBlogService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.service.IFollowService;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -40,6 +41,9 @@ import java.util.stream.Collectors;
 public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IBlogService {
     @Resource
     private IUserService userService;
+
+    @Autowired
+    IFollowService followService;
 
     @Autowired
     StringRedisTemplate stringRedisTemplate;
@@ -126,13 +130,71 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         List<Long> ids = top5.stream().map(Long::valueOf).collect(Collectors.toList());
         String idStr = StrUtil.join(",", ids);
         // 根据id降序排序 select * from tb_user where id in(1,5) order by field(id, 1, 5)
-        List<UserDTO> userDTOList = userService.list(new LambdaQueryWrapper<User>()
-                .in(User::getId, ids)
-                .last("order by field (id," + idStr + ")"))
+        List<UserDTO> userDTOList = userService.query().in("id",ids)
+                .last("order by field (id," + idStr + ")").list()
                 .stream()
                 .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
                 .collect(Collectors.toList());
         return Result.ok(userDTOList);
+    }
+
+    @Override
+    public Result saveBlog(Blog blog) {
+        // 获取登录用户
+        UserDTO user = UserHolder.getUser();
+        blog.setUserId(user.getId());
+        // 保存探店博文
+        save(blog);
+        //将文章推以feed流推送到粉丝箱里
+        //1。找到所有关注者
+        List<Follow> followId = followService.query().eq("follow_user_id", user.getId()).list();
+        for(Follow follow:followId){
+            Long id = follow.getUserId();
+            String key = "feed:"+id;
+            stringRedisTemplate.opsForZSet().add(key,blog.getId().toString(),System.currentTimeMillis());
+        }
+        // 返回id
+        return Result.ok(blog.getId());
+    }
+
+    @Override
+    public Result getFollowBlog(Long lastId, Integer offset) {
+        Long userId = UserHolder.getUser().getId();
+        //找到当前用户的收信箱
+        String key = "feed:"+userId;
+        Set<ZSetOperations.TypedTuple<String>> typedTuples = stringRedisTemplate.opsForZSet().reverseRangeByScoreWithScores(key, 0, lastId, offset, 2);
+        if(typedTuples == null ||typedTuples.isEmpty()){
+            return Result.fail("没有新推文");
+        }
+        List<Long> blogIds = new ArrayList<>();
+        Long lastScore = 0L;
+        Integer off = 1;
+        for(ZSetOperations.TypedTuple<String> blogTuple: typedTuples){
+            String blogIdStr = blogTuple.getValue();
+            blogIds.add(Long.valueOf(blogIdStr));
+            Long score = blogTuple.getScore().longValue();
+            if(score == lastScore){
+                off++;
+            }else{
+                lastScore = score;
+                off = 1;
+            }
+        }
+        List<Blog> blogs = new ArrayList<>();
+        for(Long id:blogIds){
+            Blog blog = getById(id);
+            Long blogUserId = blog.getUserId();
+            User user = userService.getById(blogUserId);
+            blog.setName(user.getNickName());
+            blog.setIcon(user.getIcon());
+            isBlogLiked(blog);
+            blogs.add(blog);
+        }
+        ScrollResult ret = new ScrollResult();
+        ret.setList(blogs);
+        ret.setMinTime(lastScore);
+        ret.setOffset(off);
+        return Result.ok(ret);
     }
 
 }
